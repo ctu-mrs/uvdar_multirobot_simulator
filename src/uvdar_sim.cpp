@@ -7,6 +7,15 @@
 #include <mrs_lib/transformer.h>
 #include <mrs_lib/param_loader.h>
 
+#include <random>
+
+namespace e = Eigen;
+
+namespace Eigen
+{
+  typedef Matrix< double, 6, 6 > 	Matrix6d;
+}
+
 namespace uvdar {
 
   struct NodeReferrer {
@@ -18,6 +27,31 @@ namespace uvdar {
     std::string name;
     nav_msgs::Odometry pose;
     bool initialized=false;
+  };
+
+  struct NormalRandomVariable
+  {
+    NormalRandomVariable(Eigen::MatrixXd const& covar)
+      : NormalRandomVariable(Eigen::VectorXd::Zero(covar.rows()), covar)
+    {}
+
+    NormalRandomVariable(Eigen::VectorXd const& mean, Eigen::MatrixXd const& covar)
+      : mean(mean)
+    {
+      Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigenSolver(covar);
+      transform = eigenSolver.eigenvectors() * eigenSolver.eigenvalues().cwiseSqrt().asDiagonal();
+    }
+
+    Eigen::VectorXd mean;
+    Eigen::MatrixXd transform;
+
+    Eigen::VectorXd operator()() const
+    {
+      static std::mt19937 gen{ std::random_device{}() };
+      static std::normal_distribution<> dist;
+
+      return mean + transform * Eigen::VectorXd{ mean.size() }.unaryExpr([&]([[maybe_unused]] auto x) { return dist(gen); });
+    }
   };
 
   class UVDARMultirobotSimulator {
@@ -77,7 +111,7 @@ namespace uvdar {
             _node_poses_.push_back({.name=n,.pose=nav_msgs::Odometry(),.initialized=false});
             _targets_.push_back({.name=n, .index = (int)(_node_poses_.size()-1),.ID=ID});
           }
-          
+
         }
         for (auto &n : _observer_name_list){
           auto is_named = [n](const NodePose &np) -> bool { return np.name == n; };
@@ -88,7 +122,7 @@ namespace uvdar {
             _node_poses_.push_back({.name=n,.pose=nav_msgs::Odometry(),.initialized=false});
             _observers_.push_back({.name=n, .index = (int)(_node_poses_.size()-1)});
           }
-          
+
         }
 
         param_loader.loadParam("ground_truth_topic", _ground_truth_topic_, std::string());
@@ -110,6 +144,10 @@ namespace uvdar {
 
         }
 
+        param_loader.loadParam("output_frame", _output_frame_, std::string("local_origin"));
+
+        param_loader.loadParam("uvdar_rate", _uvdar_rate_, double(-1.0));
+
         for (unsigned int i = 0; i < (unsigned int)(_observers_.size()); i++){
           auto size = std::snprintf(nullptr, 0, _uvdar_topic_.c_str(), _observers_[i].name.c_str() );
           char topic_raw[size+1];
@@ -121,9 +159,7 @@ namespace uvdar {
           uvdar_rate_timer_.push_back(nh.createTimer(ros::Rate(_uvdar_rate_).expectedCycleTime(), boost::bind(&UVDARMultirobotSimulator::ProduceEstimate, this, _1, i), false, true));
         }
 
-        param_loader.loadParam("output_frame", _output_frame_, std::string("local_origin"));
 
-        param_loader.loadParam("uvdar_rate", _uvdar_rate_, double(-1.0));
 
         transformer_ = mrs_lib::Transformer("UVDARPoseCalculator");
       }
@@ -157,27 +193,29 @@ namespace uvdar {
           return;
         }
 
+        mrs_msgs::PoseWithCovarianceArrayStamped msg;
+        msg.header.stamp = ros::Time::now();
+        msg.header.frame_id = _observers_[observer_index].name + "/" + _output_frame_;
+
         for (auto &tg : _targets_){
           if (!(_node_poses_[tg.index].initialized)){
             ROS_INFO_STREAM("[UVDARMultirobotSimulator]: Pose of target " << _targets_[observer_index].name << " not yet initialized...");
             continue;
           }
 
-          mrs_msgs::PoseWithCovarianceArrayStamped msg;
-          msg.header.stamp = ros::Time::now();
-          msg.header.frame_id = _output_frame_;
+          auto curr_pose = _node_poses_[tg.index];
 
           geometry_msgs::TransformStamped world2fcu, fcu2output;
           {
             std::scoped_lock lock(transformer_mutex);
-            auto world2fcu_tmp = transformer_.getTransform(_node_poses_[tg.index].pose.header.frame_id,_observers_[observer_index].name+"/fcu", msg.header.stamp);
+            auto world2fcu_tmp = transformer_.getTransform(curr_pose.pose.header.frame_id,_observers_[observer_index].name+"/fcu", msg.header.stamp-ros::Duration(0.2));
             if (!world2fcu_tmp){
-              ROS_ERROR_STREAM_THROTTLE(1.0,"[UVDARMultirobotSimulator]: Could not obtain transform from " << _node_poses_[tg.index].pose.header.frame_id << " to " <<  _observers_[observer_index].name+"/fcu" << "!");
+              ROS_ERROR_STREAM_THROTTLE(1.0,"[UVDARMultirobotSimulator]: Could not obtain transform from " << curr_pose.pose.header.frame_id << " to " <<  _observers_[observer_index].name+"/fcu" << "!");
               return;
             }
             world2fcu = world2fcu_tmp.value();
 
-            auto fcu2output_tmp = transformer_.getTransform(_observers_[observer_index].name+"/fcu", _observers_[observer_index].name+"/"+_output_frame_, msg.header.stamp);
+            auto fcu2output_tmp = transformer_.getTransform(_observers_[observer_index].name+"/fcu", _observers_[observer_index].name+"/"+_output_frame_, msg.header.stamp-ros::Duration(0.2));
             if (!fcu2output_tmp){
               ROS_ERROR_STREAM_THROTTLE(1.0,"[UVDARMultirobotSimulator]: Could not obtain transform from " << _observers_[observer_index].name+"/fcu"<< " to " <<  _observers_[observer_index].name+"/"+_output_frame_ << "!");
               return;
@@ -186,16 +224,18 @@ namespace uvdar {
           }
 
 
-          auto target_pose_fcu_tmp = transformer_.transform(_node_poses_[tg.index].pose.pose, world2fcu);
+          geometry_msgs::PoseWithCovarianceStamped target_pose_world;
+          target_pose_world.pose = curr_pose.pose.pose;
+          auto target_pose_fcu_tmp = transformer_.transform(target_pose_world, world2fcu);
           if (!target_pose_fcu_tmp){
-            ROS_ERROR_STREAM_THROTTLE(1.0,"[UVDARMultirobotSimulator]: Could not perform transform from " << _node_poses_[tg.index].pose.header.frame_id << " to " <<  _observers_[observer_index].name+"/fcu" << "!");
+            ROS_ERROR_STREAM_THROTTLE(1.0,"[UVDARMultirobotSimulator]: Could not perform transform from " << curr_pose.pose.header.frame_id << " to " <<  _observers_[observer_index].name+"/fcu" << "!");
             return;
           }
           auto target_pose_fcu = target_pose_fcu_tmp.value();
 
-          //TODO: add noise and other effects
+          auto target_estimate_fcu = generateMeasurement(target_pose_fcu);
 
-          auto target_estimate_output_tmp = transformer_.transform(target_pose_fcu, fcu2output);
+          auto target_estimate_output_tmp = transformer_.transform(target_estimate_fcu, fcu2output);
           if (!target_estimate_output_tmp){
             ROS_ERROR_STREAM_THROTTLE(1.0,"[UVDARMultirobotSimulator]: Could not perform transform from " << _observers_[observer_index].name+"/fcu"<< " to " <<  _observers_[observer_index].name+"/"+_output_frame_ << "!");
             return;
@@ -204,12 +244,14 @@ namespace uvdar {
 
           mrs_msgs::PoseWithCovarianceIdentified pci;
           pci.id = tg.ID;
-          pci.pose = target_estimate_output.pose;
-          pci.covariance = target_estimate_output.covariance;
+          pci.pose = target_estimate_output.pose.pose;
+          pci.covariance = target_estimate_output.pose.covariance;
 
           msg.poses.push_back(pci);
         }
 
+
+        pub_uvdar_estimate_[observer_index].publish(msg);
 
         return;
       }
@@ -221,7 +263,63 @@ namespace uvdar {
         int ID = atoi(substring.c_str());
         return ID;
       }
+
+      geometry_msgs::PoseWithCovarianceStamped generateMeasurement(geometry_msgs::PoseWithCovarianceStamped input){
+        e::Vector3d p(
+            input.pose.pose.position.x,
+            input.pose.pose.position.y,
+            input.pose.pose.position.z
+            );
+        e::Quaterniond q(
+            input.pose.pose.orientation.w,
+            input.pose.pose.orientation.x,
+            input.pose.pose.orientation.y,
+            input.pose.pose.orientation.z
+            );
+
+
+
+
+
+        e::Matrix6d C = e::Matrix6d::Zero();
+        C.topLeftCorner(3,3) = 0.5*e::Matrix3d::Identity();
+        C.bottomRightCorner(3,3) = 0.5*e::Matrix3d::Identity();
+
+        auto noise_gen = NormalRandomVariable(C);
+
+        auto noise = noise_gen();
+
+        e::Vector3d pn = p + noise.topLeftCorner(3,1);
+        e::Vector3d wn = noise.bottomLeftCorner(3,1);
+        e::Quaterniond qtemp =
+          e::AngleAxisd(wn.x(), e::Vector3d::UnitX()) *
+          e::AngleAxisd(wn.y(), e::Vector3d::UnitY()) *
+          e::AngleAxisd(wn.z(), e::Vector3d::UnitZ());
+        e::Quaterniond qn = qtemp*q;
+        
+
+
+
+
+        geometry_msgs::PoseWithCovarianceStamped output;
+        output.pose.pose.position.x = pn.x();
+        output.pose.pose.position.y = pn.y();
+        output.pose.pose.position.z = pn.z();
+        output.pose.pose.orientation.w = qn.w();
+        output.pose.pose.orientation.x = qn.x();
+        output.pose.pose.orientation.y = qn.y();
+        output.pose.pose.orientation.z = qn.z();
+
+        for (int i=0; i<6; i++){
+          for (int j=0; j<6; j++){
+            output.pose.covariance[6*j+i] = C(j,i);
+          }
+        }
+
+        return output;
+      }
   };
+
 
 } //uvdar
 

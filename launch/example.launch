@@ -2,15 +2,15 @@
   <group ns="uvdar_multirobot_simulator">
     <!-- <node name="uvdar_multirobot_simulator" pkg="uvdar_multirobot_simulator" type="uvdar_sim" output="screen" > --> 
     <node name="uvdar_multirobot_simulator" pkg="uvdar_multirobot_simulator" type="uvdar_sim" output="screen" launch-prefix="debug_roslaunch"> -->
-      <rosparam param="target_name_list"> ["uav1","uav3","uav4","uav7"] </rosparam>
-      <rosparam param="observer_name_list"> ["uav1","uav2","uav3","uav6","uav5","uav7"] </rosparam>
+      <rosparam param="target_name_list"> ["uav1","uav3","uav4"] </rosparam>
+      <rosparam param="observer_name_list"> ["uav1","uav2","uav3","uav5"] </rosparam>
 
       <param name="ground_truth_topic" type="string" value="/multirotor_simulator/%s/odom"/>
       <param name="uvdar_topic" type="string" value="/%s/uvdar/measuredPoses"/>
         
       <param name="output_frame" type="string" value="local_origin"/>
         
-      <param name="uvdar_rate" type="int" value="10"/>
+      <param name="uvdar_rate" type="double" value="10.0"/>
     </node>
   </group>
 </launch>
