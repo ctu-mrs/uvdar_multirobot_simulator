@@ -9,6 +9,8 @@
 
 #include <random>
 
+#define sqr(X) ((X) * (X))
+
 namespace e = Eigen;
 
 namespace Eigen
@@ -192,6 +194,7 @@ namespace uvdar {
           ROS_INFO_STREAM("[UVDARMultirobotSimulator]: Pose of observer " << _observers_[observer_index].name << " not yet initialized...");
           return;
         }
+        ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: Observer: " << _observers_[observer_index].name);
 
         mrs_msgs::PoseWithCovarianceArrayStamped msg;
         msg.header.stamp = ros::Time::now();
@@ -200,6 +203,9 @@ namespace uvdar {
         for (auto &tg : _targets_){
           if (!(_node_poses_[tg.index].initialized)){
             ROS_INFO_STREAM("[UVDARMultirobotSimulator]: Pose of target " << _targets_[observer_index].name << " not yet initialized...");
+            continue;
+          }
+          if (_observers_[observer_index].name == tg.name){//skipping self-observation;
             continue;
           }
 
@@ -233,6 +239,7 @@ namespace uvdar {
           }
           auto target_pose_fcu = target_pose_fcu_tmp.value();
 
+          ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: Target: " << tg.name);
           auto target_estimate_fcu = generateMeasurement(target_pose_fcu);
 
           auto target_estimate_output_tmp = transformer_.transform(target_estimate_fcu, fcu2output);
@@ -277,26 +284,84 @@ namespace uvdar {
             input.pose.pose.orientation.z
             );
 
+        /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: p: " << p.transpose()); */
+
+        double distance = p.norm();
+
+        e::Vector3d bearing = p.normalized();
+        e::Vector3d horizontal_eigen;
+        horizontal_eigen << bearing.y(), -bearing.x(), 0;
+
+
+        e::Matrix3d eigenvectors;
+        eigenvectors << bearing, horizontal_eigen, e::Vector3d::UnitZ();
+
+        double tan_pixangle = tan(0.004); //pi/752 radians
+        double target_radius = 0.25;
+
+        double distance_eigenval_sqrt;
+        double width_eigenval_sqrt;
+        double height_eigenval_sqrt;
+
+        int view_marker_count = viewMarkerCount(p,q);
+        ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: the marker count is " << view_marker_count);
+        if (view_marker_count == 3){
+          distance_eigenval_sqrt = (0.1+randRange(-0.03,0.03))*distance;
+          /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: distance_eigenval_sqrt = " << distance_eigenval_sqrt); */
+          width_eigenval_sqrt = 3*distance*tan_pixangle;
+          height_eigenval_sqrt = 3*distance*tan_pixangle;
+        }
+        else if (view_marker_count == 2) {
+          distance_eigenval_sqrt = (0.2+randRange(-0.07,0.07))*distance;
+          /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: distance_eigenval_sqrt = " << distance_eigenval_sqrt); */
+            width_eigenval_sqrt = 1.5*target_radius;
+          height_eigenval_sqrt = 1.5*target_radius;
+        }
+        else {
+          //TODO - mean in the center of range
+          distance_eigenval_sqrt = 7.5;
+          width_eigenval_sqrt = 2*target_radius;
+          height_eigenval_sqrt = 2*target_radius;
+        }
+        
+        e::Matrix3d eigenvalues = e::Vector3d(
+            sqr(distance_eigenval_sqrt),
+            sqr(width_eigenval_sqrt),
+            sqr(height_eigenval_sqrt)
+            ).asDiagonal();
+
+        e::Matrix3d C_pos = eigenvectors*eigenvalues*eigenvectors.transpose();
+
+
+
+
 
 
 
 
         e::Matrix6d C = e::Matrix6d::Zero();
-        C.topLeftCorner(3,3) = 0.5*e::Matrix3d::Identity();
-        C.bottomRightCorner(3,3) = 0.5*e::Matrix3d::Identity();
+        C.topLeftCorner(3,3) = C_pos;
+        C.bottomRightCorner(3,3) = sqr(0.5)*e::Matrix3d::Identity();
 
         auto noise_gen = NormalRandomVariable(C);
 
         auto noise = noise_gen();
 
-        e::Vector3d pn = p + noise.topLeftCorner(3,1);
+        e::Vector3d pn;
+        if (view_marker_count > 1){
+          pn = p + noise.topLeftCorner(3,1);
+          /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: Multiple markers, noise is: [" << noise.topLeftCorner(3,1).transpose() << "]"); */
+        }
+        else {
+          pn = (bearing*7.5);//+ 2*(noise.topLeftCorner(3,1));
+          /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: Single marker, noise is: [" << noise.topLeftCorner(3,1).transpose() << "]"); */
+        }
         e::Vector3d wn = noise.bottomLeftCorner(3,1);
         e::Quaterniond qtemp =
           e::AngleAxisd(wn.x(), e::Vector3d::UnitX()) *
           e::AngleAxisd(wn.y(), e::Vector3d::UnitY()) *
           e::AngleAxisd(wn.z(), e::Vector3d::UnitZ());
         e::Quaterniond qn = qtemp*q;
-        
 
 
 
@@ -316,6 +381,38 @@ namespace uvdar {
           }
         }
 
+        return output;
+      }
+
+      int viewMarkerCount(e::Vector3d p, e::Quaterniond q){
+        e::Vector3d bearing = p.normalized();
+        e::Vector3d target_front = q*e::Vector3d::UnitX();
+        ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: bearin: " << bearing.transpose());
+        ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: target_front: " << target_front.transpose());
+        //TODO make more detailed (tilts not accounted for)
+        double relative_angle = acos(target_front.dot(bearing));
+        double remainder = fmod(relative_angle, M_PI/2.0);
+        ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: relative angle: " << relative_angle << ", remainder: " << remainder);
+        //TODO this should be more random - also incorporate seeing none here as return 0.
+
+        if (p.norm() < 12.0){
+          if ((abs(remainder) > 0.349) && (abs(remainder) < 1.222)){ //betwen 20 and 70 degrees
+            return 3;
+          }
+          else {
+            return 2;
+          }
+        }
+        else {
+          return 1;
+        }
+      }
+
+      double randRange(double minimum, double maximum){
+        static std::mt19937 gen{ std::random_device{}() };
+        static std::uniform_real_distribution<> distribution(minimum, maximum);
+        double output = distribution(gen);
+        /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: Random from " << minimum << " to " << maximum << " came out to " << output); */
         return output;
       }
   };
