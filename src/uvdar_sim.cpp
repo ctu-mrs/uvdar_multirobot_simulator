@@ -240,7 +240,12 @@ namespace uvdar {
           auto target_pose_fcu = target_pose_fcu_tmp.value();
 
           ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: Target: " << tg.name);
-          auto target_estimate_fcu = generateMeasurement(target_pose_fcu);
+          auto target_estimate_fcu_opt = generateMeasurement(target_pose_fcu);
+
+          if (!target_estimate_fcu_opt)
+            continue;
+
+          geometry_msgs::PoseWithCovarianceStamped target_estimate_fcu = target_estimate_fcu_opt.value();
 
           auto target_estimate_output_tmp = transformer_.transform(target_estimate_fcu, fcu2output);
           if (!target_estimate_output_tmp){
@@ -271,7 +276,7 @@ namespace uvdar {
         return ID;
       }
 
-      geometry_msgs::PoseWithCovarianceStamped generateMeasurement(geometry_msgs::PoseWithCovarianceStamped input){
+      std::optional<geometry_msgs::PoseWithCovarianceStamped> generateMeasurement(geometry_msgs::PoseWithCovarianceStamped input){
         e::Vector3d p(
             input.pose.pose.position.x,
             input.pose.pose.position.y,
@@ -317,11 +322,14 @@ namespace uvdar {
             width_eigenval_sqrt = 1.5*target_radius;
           height_eigenval_sqrt = 1.5*target_radius;
         }
-        else {
+        else if (view_marker_count == 1) {
           //TODO - mean in the center of range
           distance_eigenval_sqrt = 7.5;
           width_eigenval_sqrt = 2*target_radius;
           height_eigenval_sqrt = 2*target_radius;
+        }
+        else {
+          return std::nullopt;
         }
         
         e::Matrix3d eigenvalues = e::Vector3d(
@@ -402,6 +410,9 @@ namespace uvdar {
           else {
             return 2;
           }
+        }
+        else if (p.norm() > 15){
+          return 0;
         }
         else {
           return 1;
