@@ -56,6 +56,38 @@ namespace uvdar {
     }
   };
 
+  struct UniformSpheroidRandomVariable
+  {
+    UniformSpheroidRandomVariable(Eigen::MatrixXd const& covar)
+      : UniformSpheroidRandomVariable(Eigen::VectorXd::Zero(covar.rows()), covar)
+    {}
+
+    UniformSpheroidRandomVariable(Eigen::VectorXd const& mean, Eigen::MatrixXd const& covar)
+      : mean(mean)
+    {
+      Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigenSolver(covar);
+      transform = eigenSolver.eigenvectors() * eigenSolver.eigenvalues().cwiseSqrt().asDiagonal();
+    }
+
+    Eigen::VectorXd mean;
+    Eigen::MatrixXd transform;
+
+    Eigen::VectorXd operator()() const
+    {
+      static std::mt19937 gen{ std::random_device{}() };
+      static std::uniform_real_distribution<> dist(-1,1);
+
+      e::VectorXd candidate;
+      bool found = false;
+      while (!found){ // get uniform value inside a unit sphere first
+        candidate = Eigen::VectorXd{ mean.size() }.unaryExpr([&]([[maybe_unused]] auto x) { return dist(gen); });
+        if (candidate.norm() < 1.0)
+          found = true;
+      }
+      return mean + transform * candidate;
+    }
+  };
+
   class UVDARMultirobotSimulator {
     private: 
       //TODO: mutex these
@@ -194,7 +226,7 @@ namespace uvdar {
           ROS_INFO_STREAM("[UVDARMultirobotSimulator]: Pose of observer " << _observers_[observer_index].name << " not yet initialized...");
           return;
         }
-        ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: Observer: " << _observers_[observer_index].name);
+        /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: Observer: " << _observers_[observer_index].name); */
 
         mrs_msgs::PoseWithCovarianceArrayStamped msg;
         msg.header.stamp = ros::Time::now();
@@ -239,7 +271,7 @@ namespace uvdar {
           }
           auto target_pose_fcu = target_pose_fcu_tmp.value();
 
-          ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: Target: " << tg.name);
+          /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: Target: " << tg.name); */
           auto target_estimate_fcu_opt = generateMeasurement(target_pose_fcu);
 
           if (!target_estimate_fcu_opt)
@@ -351,7 +383,8 @@ namespace uvdar {
         C.topLeftCorner(3,3) = C_pos;
         C.bottomRightCorner(3,3) = sqr(0.5)*e::Matrix3d::Identity();
 
-        auto noise_gen = NormalRandomVariable(C);
+        /* auto noise_gen = NormalRandomVariable(C); */
+        auto noise_gen = UniformSpheroidRandomVariable(C);
 
         auto noise = noise_gen();
 
@@ -395,12 +428,12 @@ namespace uvdar {
       int viewMarkerCount(e::Vector3d p, e::Quaterniond q){
         e::Vector3d bearing = p.normalized();
         e::Vector3d target_front = q*e::Vector3d::UnitX();
-        ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: bearin: " << bearing.transpose());
-        ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: target_front: " << target_front.transpose());
+        /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: bearin: " << bearing.transpose()); */
+        /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: target_front: " << target_front.transpose()); */
         //TODO make more detailed (tilts not accounted for)
         double relative_angle = acos(target_front.dot(bearing));
         double remainder = fmod(relative_angle, M_PI/2.0);
-        ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: relative angle: " << relative_angle << ", remainder: " << remainder);
+        /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: relative angle: " << relative_angle << ", remainder: " << remainder); */
         //TODO this should be more random - also incorporate seeing none here as return 0.
 
         if (p.norm() < 12.0){
