@@ -8,7 +8,7 @@
       <param name="ground_truth_topic" type="string" value="/multirotor_simulator/%s/odom"/>
       <param name="uvdar_topic" type="string" value="/%s/uvdar/measuredPoses"/>
         
-      <param name="output_frame" type="string" value="local_origin"/>
+      <param name="output_frame" type="string" value="world_origin"/>
         
       <param name="uvdar_rate" type="double" value="10.0"/>
     </node>

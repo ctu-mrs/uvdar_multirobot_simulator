@@ -79,7 +79,7 @@ namespace uvdar {
 
       e::VectorXd candidate;
       bool found = false;
-      while (!found){ // get uniform value inside a unit sphere first
+      while (!found){ // get uniform value inside a unit sphere first, should be quick (volume of inscribed sphere is approx. 0.52 of the cube)
         candidate = Eigen::VectorXd{ mean.size() }.unaryExpr([&]([[maybe_unused]] auto x) { return dist(gen); });
         if (candidate.norm() < 1.0)
           found = true;
@@ -341,7 +341,7 @@ namespace uvdar {
         double height_eigenval_sqrt;
 
         int view_marker_count = viewMarkerCount(p,q);
-        ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: the marker count is " << view_marker_count);
+        /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: the marker count is " << view_marker_count); */
         if (view_marker_count == 3){
           distance_eigenval_sqrt = (0.1+randRange(-0.03,0.03))*distance;
           /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: distance_eigenval_sqrt = " << distance_eigenval_sqrt); */
@@ -436,20 +436,30 @@ namespace uvdar {
         /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: relative angle: " << relative_angle << ", remainder: " << remainder); */
         //TODO this should be more random - also incorporate seeing none here as return 0.
 
+        int output;
         if (p.norm() < 12.0){
           if ((abs(remainder) > 0.349) && (abs(remainder) < 1.222)){ //betwen 20 and 70 degrees
-            return 3;
+            output = 3;
           }
           else {
-            return 2;
+            output = 2;
           }
         }
         else if (p.norm() > 15){
-          return 0;
+          output = 0;
         }
         else {
-          return 1;
+          output = 1;
         }
+
+        int init_count = output;
+        for (int i=0; i < init_count; i++){
+          if (dropMarker()){
+            output --;
+          }
+        }
+      
+        return output;
       }
 
       double randRange(double minimum, double maximum){
@@ -458,6 +468,13 @@ namespace uvdar {
         double output = distribution(gen);
         /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: Random from " << minimum << " to " << maximum << " came out to " << output); */
         return output;
+      }
+
+      bool dropMarker(){
+        static std::mt19937 gen{ std::random_device{}() };
+        static std::uniform_int_distribution<> distribution(0, 100);
+        int sample = distribution(gen);
+        return (sample <5); //percent of marker views drop one
       }
   };
 
