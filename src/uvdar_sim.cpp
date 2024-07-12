@@ -355,10 +355,14 @@ namespace uvdar {
           height_eigenval_sqrt = 1.5*target_radius;
         }
         else if (view_marker_count == 1) {
-          //TODO - mean in the center of range
           distance_eigenval_sqrt = 7.5;
           width_eigenval_sqrt = 2*target_radius;
           height_eigenval_sqrt = 2*target_radius;
+
+          //perturb the bearing - the single visible marker may not be towards the center of the target
+          auto offset_gen = UniformSpheroidRandomVariable((e::Vector3d::Ones()*target_radius).asDiagonal());
+          auto offset = offset_gen();
+          bearing = (p+offset).normalized();
         }
         else {
           return std::nullopt;
