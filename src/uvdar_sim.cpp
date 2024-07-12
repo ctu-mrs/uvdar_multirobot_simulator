@@ -331,6 +331,7 @@ namespace uvdar {
 
 
         e::Matrix3d eigenvectors;
+        //TODO make more detailed (tilts not accounted for) - last two eigenvectors need to be rotated accordingly. Tilt along line of sight may also be relevant for 3-marker views
         eigenvectors << bearing, horizontal_eigen, e::Vector3d::UnitZ();
 
         double tan_pixangle = tan(0.004); //pi/752 radians
@@ -434,11 +435,9 @@ namespace uvdar {
         e::Vector3d target_front = q*e::Vector3d::UnitX();
         /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: bearin: " << bearing.transpose()); */
         /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: target_front: " << target_front.transpose()); */
-        //TODO make more detailed (tilts not accounted for)
         double relative_angle = acos(target_front.dot(bearing));
         double remainder = fmod(relative_angle, M_PI/2.0);
         /* ROS_INFO_STREAM("[" << ros::this_node::getName().c_str() << "]: relative angle: " << relative_angle << ", remainder: " << remainder); */
-        //TODO this should be more random - also incorporate seeing none here as return 0.
 
         int output;
         if (p.norm() < 12.0){
